@@ -192,6 +192,10 @@ export function sendAutoApproveNotification(
   mediaType: "movie" | "tv",
   tmdbId: number,
 ): void {
+  // When webhooks are enabled, Seerr is the source of truth for approval notifications.
+  // This avoids duplicate messages and avoids claiming a download has started before *arr accepts it.
+  if (config.WEBHOOK_SECRET) return;
+
   (async () => {
     let title: string;
     try {
