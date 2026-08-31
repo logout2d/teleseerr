@@ -18,12 +18,13 @@ services:
     ports:
       - 3000:3000
     networks:
-      - arr_default
+      - arr_network
     restart: unless-stopped
 
 volumes:
   teleseerr-data:
 
 networks:
-  arr_default:
+  arr_network:
     external: true
+    name: ${TELESEERR_DOCKER_NETWORK:-arr_default}
