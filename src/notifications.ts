@@ -1,4 +1,5 @@
 import type { Bot } from "grammy";
+import { getRadarrMovieAvailability } from "./arr/availability.js";
 import { config } from "./config.js";
 import { log } from "./logger.js";
 import { retrySeerrRequest } from "./retry.js";
@@ -60,7 +61,7 @@ function buildMessage(notificationType: string, subject: string): string | null 
 
 function parseReleaseDate(value: string | undefined): Date | null {
   if (!value) return null;
-  const parsed = new Date(`${value}T00:00:00Z`);
+  const parsed = new Date(value.includes("T") ? value : `${value}T00:00:00Z`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -79,16 +80,44 @@ function formatReleaseDate(date: Date): string {
   }).format(date);
 }
 
+function buildWaitingForReleaseMessage(title: string, releaseDate?: string): string {
+  const parsedDate = parseReleaseDate(releaseDate);
+  if (parsedDate) {
+    const formattedDate = escNotify(formatReleaseDate(parsedDate));
+    return `🕒 *${title}* — запрос одобрен\\. По правилам Radarr фильм ещё недоступен; ожидаемая дата доступности — ${formattedDate}\\. Фильм останется на отслеживании и поиск начнётся автоматически, когда он станет доступен\\.`;
+  }
+
+  return `🕒 *${title}* — запрос одобрен\\. Radarr считает фильм ещё недоступным, поэтому он останется на отслеживании до появления релиза\\.`;
+}
+
 async function buildApprovalMessage(payload: SeerrWebhookPayload): Promise<string> {
   const title = escNotify(payload.subject);
   const mediaType = payload.media?.media_type;
   const tmdbId = payload.media?.tmdbId ? Number(payload.media.tmdbId) : NaN;
 
-  // For movies, Seerr exposes both TMDB releaseDate and production status. This lets us
-  // distinguish a normal approved request from content that Radarr will simply monitor
-  // until release. TV season-specific release dates need separate handling, so TV keeps
-  // the generic approval message for now.
   if (mediaType === "movie" && Number.isFinite(tmdbId)) {
+    // Radarr is the source of truth for movie availability because its `isAvailable`
+    // already applies Minimum Availability, cinema/digital/physical dates, and availability delay.
+    const radarrAvailability = await getRadarrMovieAvailability(tmdbId);
+    if (radarrAvailability?.found) {
+      log.info(
+        {
+          tmdbId,
+          isAvailable: radarrAvailability.isAvailable,
+          minimumAvailability: radarrAvailability.minimumAvailability,
+          releaseDate: radarrAvailability.releaseDate,
+        },
+        "Radarr movie availability resolved",
+      );
+
+      if (!radarrAvailability.isAvailable) {
+        return buildWaitingForReleaseMessage(title, radarrAvailability.releaseDate);
+      }
+
+      return `⚙️ *${title}* has been approved and queued for processing\\!`;
+    }
+
+    // Fallback for installations where direct Radarr API access is not configured yet.
     try {
       const details = await seerr.getMovieDetails(tmdbId);
       const releaseDate = parseReleaseDate(details.releaseDate);
@@ -98,12 +127,7 @@ async function buildApprovalMessage(payload: SeerrWebhookPayload): Promise<strin
       );
 
       if ((releaseDate && isFutureUtcDate(releaseDate)) || explicitlyUnreleased) {
-        if (releaseDate) {
-          const formattedDate = escNotify(formatReleaseDate(releaseDate));
-          return `🕒 *${title}* — запрос одобрен\\. Релиз ожидается ${formattedDate}\\. Фильм останется на отслеживании и поиск начнётся автоматически, когда он станет доступен\\.`;
-        }
-
-        return `🕒 *${title}* — запрос одобрен\\. Фильм ещё не вышел и останется на отслеживании до появления релиза\\.`;
+        return buildWaitingForReleaseMessage(title, details.releaseDate);
       }
     } catch (e) {
       log.debug({ tmdbId, err: e }, "Could not determine movie release state");
