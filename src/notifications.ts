@@ -25,7 +25,7 @@ export type SeerrWebhookPayload = {
 
 type RetryState = {
   attempt: number;
-  timer?: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout> | undefined;
 };
 
 const retryStates = new Map<number, RetryState>();
