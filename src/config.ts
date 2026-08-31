@@ -24,6 +24,17 @@ function optionalInt(key: string, fallback: number): number {
   return val;
 }
 
+function optionalIntList(key: string, fallback: number[]): number[] {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+
+  const values = raw.split(",").map((part) => Number(part.trim()));
+  if (values.length === 0 || values.some((value) => !Number.isFinite(value) || value <= 0)) {
+    throw new Error(`${key} must be a comma-separated list of positive numbers, got "${raw}"`);
+  }
+  return values;
+}
+
 export const config = {
   TELEGRAM_BOT_TOKEN: required("TELEGRAM_BOT_TOKEN"),
   SEERR_URL: required("SEERR_URL").replace(/\/$/, ""),
@@ -40,6 +51,8 @@ export const config = {
   MINI_APP_PORT: optionalInt("TELESEERR_MINI_APP_PORT", 3000),
   MINI_APP_URL: optional("TELESEERR_MINI_APP_URL", ""),
   ANIME_SONARR_ID: optional("TELESEERR_ANIME_SONARR_ID", ""),
+  AUTO_RETRY_FAILED: optional("TELESEERR_AUTO_RETRY_FAILED", "false") === "true",
+  RETRY_DELAYS_SECONDS: optionalIntList("TELESEERR_RETRY_DELAYS_SECONDS", [30, 120, 300]),
 
   // Sonarr/Radarr direct API (optional — for download progress)
   RADARR_URL: optional("TELESEERR_RADARR_URL", "").replace(/\/$/, ""),
