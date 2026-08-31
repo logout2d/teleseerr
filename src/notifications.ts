@@ -58,6 +58,61 @@ function buildMessage(notificationType: string, subject: string): string | null 
   }
 }
 
+function parseReleaseDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isFutureUtcDate(date: Date): boolean {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  return date.getTime() > today.getTime();
+}
+
+function formatReleaseDate(date: Date): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+async function buildApprovalMessage(payload: SeerrWebhookPayload): Promise<string> {
+  const title = escNotify(payload.subject);
+  const mediaType = payload.media?.media_type;
+  const tmdbId = payload.media?.tmdbId ? Number(payload.media.tmdbId) : NaN;
+
+  // For movies, Seerr exposes both TMDB releaseDate and production status. This lets us
+  // distinguish a normal approved request from content that Radarr will simply monitor
+  // until release. TV season-specific release dates need separate handling, so TV keeps
+  // the generic approval message for now.
+  if (mediaType === "movie" && Number.isFinite(tmdbId)) {
+    try {
+      const details = await seerr.getMovieDetails(tmdbId);
+      const releaseDate = parseReleaseDate(details.releaseDate);
+      const status = details.status.trim().toLowerCase();
+      const explicitlyUnreleased = ["planned", "in production", "post production"].includes(
+        status,
+      );
+
+      if ((releaseDate && isFutureUtcDate(releaseDate)) || explicitlyUnreleased) {
+        if (releaseDate) {
+          const formattedDate = escNotify(formatReleaseDate(releaseDate));
+          return `🕒 *${title}* — запрос одобрен\\. Релиз ожидается ${formattedDate}\\. Фильм останется на отслеживании и поиск начнётся автоматически, когда он станет доступен\\.`;
+        }
+
+        return `🕒 *${title}* — запрос одобрен\\. Фильм ещё не вышел и останется на отслеживании до появления релиза\\.`;
+      }
+    } catch (e) {
+      log.debug({ tmdbId, err: e }, "Could not determine movie release state");
+    }
+  }
+
+  return `⚙️ *${title}* has been approved and queued for processing\\!`;
+}
+
 function formatDelay(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds % 60 === 0) return `${seconds / 60}m`;
@@ -162,7 +217,11 @@ export async function handleWebhook(payload: SeerrWebhookPayload, bot: Bot): Pro
     clearRetryState(requestId);
   }
 
-  const message = buildMessage(notification_type, subject);
+  const message =
+    notification_type === "MEDIA_APPROVED" || notification_type === "MEDIA_AUTO_APPROVED"
+      ? await buildApprovalMessage(payload)
+      : buildMessage(notification_type, subject);
+
   if (!message) {
     log.debug({ notification_type }, "Ignoring unhandled webhook type");
     return;
