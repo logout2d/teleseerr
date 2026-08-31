@@ -1,5 +1,7 @@
 import type { Bot } from "grammy";
+import { config } from "./config.js";
 import { log } from "./logger.js";
+import { retrySeerrRequest } from "./retry.js";
 import { accountStore } from "./stores.js";
 import * as seerr from "./seerr/client.js";
 
@@ -21,6 +23,13 @@ export type SeerrWebhookPayload = {
   extra?: unknown[];
 };
 
+type RetryState = {
+  attempt: number;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
+const retryStates = new Map<number, RetryState>();
+
 // ── Helpers ───────────────────────────────────────
 
 function escNotify(text: string): string {
@@ -38,7 +47,8 @@ function buildMessage(notificationType: string, subject: string): string | null 
     case "MEDIA_AVAILABLE":
       return `✅ *${title}* is now available\\! Time to watch, matey\\! 🏴‍☠️`;
     case "MEDIA_APPROVED":
-      return `⚙️ *${title}* has been approved and is being downloaded\\!`;
+    case "MEDIA_AUTO_APPROVED":
+      return `⚙️ *${title}* has been approved and queued for processing\\!`;
     case "MEDIA_DECLINED":
       return `🔴 *${title}* request was declined by the admiral\\.`;
     case "MEDIA_FAILED":
@@ -48,18 +58,79 @@ function buildMessage(notificationType: string, subject: string): string | null 
   }
 }
 
-// ── Webhook Handler ─────────────────────────────────
+function formatDelay(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function clearRetryState(requestId: number | undefined): void {
+  if (!requestId) return;
+  const state = retryStates.get(requestId);
+  if (state?.timer) clearTimeout(state.timer);
+  retryStates.delete(requestId);
+}
+
+async function scheduleFailedRequestRetry(
+  bot: Bot,
+  telegramUserId: number,
+  requestId: number,
+  subject: string,
+): Promise<void> {
+  const current = retryStates.get(requestId) ?? { attempt: 0 };
+
+  // Duplicate MEDIA_FAILED webhook while a retry is already scheduled.
+  if (current.timer) return;
+
+  if (current.attempt >= config.RETRY_DELAYS_SECONDS.length) {
+    const title = escNotify(subject);
+    await bot.api.sendMessage(
+      telegramUserId,
+      `🔴 *${title}* failed after ${current.attempt} automatic retries\\. Manual check required\\.`,
+      { parse_mode: "MarkdownV2" },
+    );
+    retryStates.delete(requestId);
+    log.warn({ requestId, attempts: current.attempt }, "Automatic request retries exhausted");
+    return;
+  }
+
+  const attempt = current.attempt + 1;
+  const delaySeconds = config.RETRY_DELAYS_SECONDS[current.attempt]!;
+  const title = escNotify(subject);
+
+  await bot.api.sendMessage(
+    telegramUserId,
+    `⚠️ *${title}* request failed\\. Automatic retry ${attempt}/${config.RETRY_DELAYS_SECONDS.length} in ${escNotify(formatDelay(delaySeconds))}\\.`,
+    { parse_mode: "MarkdownV2" },
+  );
+
+  const state: RetryState = { attempt };
+  state.timer = setTimeout(() => {
+    state.timer = undefined;
+    retryStates.set(requestId, state);
+
+    void retrySeerrRequest(requestId)
+      .then((accepted) => {
+        if (!accepted) {
+          void scheduleFailedRequestRetry(bot, telegramUserId, requestId, subject);
+        }
+      })
+      .catch((e: unknown) => {
+        log.warn({ requestId, attempt, err: e }, "Automatic request retry failed");
+        void scheduleFailedRequestRetry(bot, telegramUserId, requestId, subject);
+      });
+  }, delaySeconds * 1000);
+
+  retryStates.set(requestId, state);
+  log.info({ requestId, attempt, delaySeconds }, "Automatic request retry scheduled");
+}
+
+// ── Webhook Handler ───────────────────────────────
 
 export async function handleWebhook(payload: SeerrWebhookPayload, bot: Bot): Promise<void> {
   const { notification_type, subject, request } = payload;
 
   log.info({ notification_type, subject }, "Seerr webhook received");
-
-  const message = buildMessage(notification_type, subject);
-  if (!message) {
-    log.debug({ notification_type }, "Ignoring unhandled webhook type");
-    return;
-  }
 
   // Resolve Telegram user via Seerr request → requestedBy user ID → account link
   const requestId = request?.request_id ? Number(request.request_id) : undefined;
@@ -73,7 +144,27 @@ export async function handleWebhook(payload: SeerrWebhookPayload, bot: Bot): Pro
   }
 
   if (!telegramUserId) {
+    const message = buildMessage(notification_type, subject);
+    if (!message) {
+      log.debug({ notification_type }, "Ignoring unhandled webhook type");
+      return;
+    }
     log.warn({ notification_type, requestId }, "No linked Telegram user for webhook notification");
+    return;
+  }
+
+  if (notification_type === "MEDIA_FAILED" && config.AUTO_RETRY_FAILED && requestId) {
+    await scheduleFailedRequestRetry(bot, telegramUserId, requestId, subject);
+    return;
+  }
+
+  if (notification_type === "MEDIA_AVAILABLE" || notification_type === "MEDIA_DECLINED") {
+    clearRetryState(requestId);
+  }
+
+  const message = buildMessage(notification_type, subject);
+  if (!message) {
+    log.debug({ notification_type }, "Ignoring unhandled webhook type");
     return;
   }
 
@@ -93,7 +184,7 @@ export async function handleWebhook(payload: SeerrWebhookPayload, bot: Bot): Pro
   }
 }
 
-// ── Auto-Approve Notification ──────────────────────
+// ── Auto-Approve Notification ─────────────────────
 
 export function sendAutoApproveNotification(
   bot: Bot,
@@ -118,7 +209,7 @@ export function sendAutoApproveNotification(
     const escaped = escNotify(title);
     await bot.api.sendMessage(
       telegramUserId,
-      `⚙️ *${escaped}* has been approved and is being downloaded\\!`,
+      `⚙️ *${escaped}* has been approved and queued for processing\\!`,
       { parse_mode: "MarkdownV2" },
     );
     log.info({ telegramUser: telegramUserId, mediaType, tmdbId }, "Auto-approve notification sent");
