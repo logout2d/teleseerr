@@ -58,6 +58,7 @@ export async function createRequest(payload: {
   is4k?: boolean | undefined;
   userId?: number | undefined;
   serverId?: number | undefined;
+  profileId?: number | undefined;
 }): Promise<CreateRequestResult> {
   const res = await seerrFetch("/request", {
     method: "POST",
