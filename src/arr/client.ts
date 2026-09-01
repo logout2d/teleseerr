@@ -16,6 +16,11 @@ type ArrInstance = {
   type: "radarr" | "sonarr";
 };
 
+export type SonarrQualityProfile = {
+  id: number;
+  name: string;
+};
+
 function getInstances(): { radarr: ArrInstance[]; sonarr: ArrInstance[] } {
   const radarr: ArrInstance[] = [];
   const sonarr: ArrInstance[] = [];
@@ -70,6 +75,9 @@ type CacheEntry = {
 
 const CACHE_TTL = 10_000;
 const cache = new Map<string, CacheEntry>();
+
+const PROFILE_CACHE_TTL = 60_000;
+let sonarrProfilesCache: { data: SonarrQualityProfile[]; fetchedAt: number } | null = null;
 
 setInterval(() => {
   const now = Date.now();
@@ -187,6 +195,50 @@ function itemToProgress(item: ArrQueueItem): DownloadProgress {
 // ── Public API ───────────────────────────────────
 
 const EMPTY_RESPONSE: ProgressResponse = { available: false, items: [], isSeasonPack: false };
+
+export async function getSonarrQualityProfiles(): Promise<SonarrQualityProfile[]> {
+  const { sonarr } = getInstances();
+  const instance = sonarr.find((item) => item.name === "sonarr") ?? sonarr[0];
+  if (!instance) return [];
+
+  if (sonarrProfilesCache && Date.now() - sonarrProfilesCache.fetchedAt < PROFILE_CACHE_TTL) {
+    return sonarrProfilesCache.data;
+  }
+
+  try {
+    const start = Date.now();
+    const res = await fetch(`${instance.url}/api/v3/qualityprofile`, {
+      headers: { "X-Api-Key": instance.apiKey },
+      signal: AbortSignal.timeout(5000),
+    });
+    const ms = Date.now() - start;
+
+    if (!res.ok) {
+      log.warn({ instance: instance.name, status: res.status, ms }, "sonarr quality profiles fetch failed");
+      return sonarrProfilesCache?.data ?? [];
+    }
+
+    const raw = (await res.json()) as Array<{ id?: number; name?: string }>;
+    const data = raw
+      .filter(
+        (item): item is { id: number; name: string } =>
+          typeof item.id === "number" && typeof item.name === "string" && item.name.startsWith("RU - "),
+      )
+      .map((item) => ({ id: item.id, name: item.name }))
+      .sort((a, b) => {
+        if (a.name === "RU - Auto") return -1;
+        if (b.name === "RU - Auto") return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    sonarrProfilesCache = { data, fetchedAt: Date.now() };
+    log.debug({ instance: instance.name, count: data.length, ms }, "sonarr RU quality profiles fetched");
+    return data;
+  } catch (e) {
+    log.warn(e, "Failed to fetch Sonarr quality profiles");
+    return sonarrProfilesCache?.data ?? [];
+  }
+}
 
 export async function getMovieProgress(tmdbId: number): Promise<ProgressResponse> {
   const { radarr } = getInstances();
