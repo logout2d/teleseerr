@@ -2,7 +2,7 @@ import type { Bot } from "grammy";
 import { json, error, parseJsonBody, numParam, pageParam, type RouteContext } from "../http.js";
 import { canRequest, canSearch, accountStore } from "../stores.js";
 import * as seerr from "../seerr/client.js";
-import { getMovieProgress, getTvProgress } from "../arr/client.js";
+import { getMovieProgress, getTvProgress, getSonarrQualityProfiles } from "../arr/client.js";
 import { capabilities } from "../capabilities.js";
 import { log } from "../logger.js";
 import { sendAutoApproveNotification } from "../notifications.js";
@@ -35,6 +35,16 @@ export function handleCapabilities({ res }: RouteContext): void {
     has4kTv: capabilities.has4kTv,
     hasProgressRadarr: capabilities.hasProgressRadarr,
     hasProgressSonarr: capabilities.hasProgressSonarr,
+  });
+}
+
+export async function handleTvQualityProfiles({ res }: RouteContext): Promise<void> {
+  const profiles = await getSonarrQualityProfiles();
+  const auto = profiles.find((profile) => profile.name === "RU - Auto");
+  json(res, {
+    available: profiles.length > 0,
+    defaultProfileId: auto?.id ?? profiles[0]?.id ?? null,
+    profiles,
   });
 }
 
@@ -155,14 +165,35 @@ export async function handleRequest({ req, res, auth }: RouteContext): Promise<v
   if (!account) return error(res, "Account not linked", 403);
 
   let serverId: number | undefined;
-  if (mediaType === "tv" && capabilities.animeSonarrId) {
+  let profileId: number | undefined;
+  let isAnime = false;
+
+  if (mediaType === "tv") {
     try {
       const details = await seerr.getTvDetails(mediaId);
-      if (details.keywords.some((k) => k.id === 210024)) {
+      isAnime = details.keywords.some((k) => k.id === 210024);
+      if (isAnime && capabilities.animeSonarrId) {
         serverId = capabilities.animeSonarrId;
       }
     } catch {
-      /* use default */
+      /* use default routing */
+    }
+
+    if (!isAnime) {
+      const profiles = await getSonarrQualityProfiles();
+      const requestedProfileId = body["profileId"];
+
+      if (requestedProfileId !== undefined && typeof requestedProfileId !== "number") {
+        return error(res, "Invalid profileId");
+      }
+
+      if (typeof requestedProfileId === "number") {
+        const allowed = profiles.find((profile) => profile.id === requestedProfileId);
+        if (!allowed) return error(res, "Unknown or disallowed profileId");
+        profileId = allowed.id;
+      } else {
+        profileId = profiles.find((profile) => profile.name === "RU - Auto")?.id;
+      }
     }
   }
 
@@ -173,6 +204,7 @@ export async function handleRequest({ req, res, auth }: RouteContext): Promise<v
     is4k: body["is4k"] === true,
     userId: account.seerrUserId,
     serverId,
+    profileId,
   });
   json(res, result, result.success ? 201 : 400);
 
@@ -203,7 +235,7 @@ export async function handleRequests({ res, url, auth }: RouteContext): Promise<
           const m = await seerr.getMovieDetails(r.media.tmdbId);
           title = m.title ?? title;
           posterPath = m.posterPath;
-        } else if (r.media.mediaType === "tv") {
+        } else {
           const t = await seerr.getTvDetails(r.media.tmdbId);
           title = t.name ?? title;
           posterPath = t.posterPath;
