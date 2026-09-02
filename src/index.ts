@@ -6,6 +6,7 @@ import { autoLinkAdmin } from "./handlers/link.js";
 import { startServer } from "./server.js";
 import { addPendingAndNotify } from "./pending.js";
 import { accountStore } from "./stores.js";
+import { getSpeedMode, isSpeedMode, setSpeedMode } from "./speed.js";
 
 const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
 
@@ -46,6 +47,44 @@ bot.command("start", async (ctx) => {
   });
 });
 
+bot.command("speed", async (ctx) => {
+  if (ctx.from?.id !== config.ADMIN_USER_ID) {
+    await ctx.reply("Команда доступна только администратору.");
+    return;
+  }
+
+  if (!config.SPEED_MODE_FILE) {
+    await ctx.reply("Управление скоростью на сервере не настроено.");
+    return;
+  }
+
+  const requested = ctx.match.trim().toLowerCase();
+
+  if (!requested) {
+    const current = await getSpeedMode();
+    const label = current === "max" ? "max" : current === "default" ? "default" : "неизвестно";
+    await ctx.reply(`Текущий режим: ${label}\nИспользование: /speed max или /speed default`);
+    return;
+  }
+
+  if (!isSpeedMode(requested)) {
+    await ctx.reply("Использование: /speed max или /speed default");
+    return;
+  }
+
+  try {
+    await setSpeedMode(requested);
+    if (requested === "max") {
+      await ctx.reply("Максимальная скорость включена. Ограничение отключено.");
+    } else {
+      await ctx.reply("Автоматическое ограничение скорости включено.");
+    }
+  } catch (e) {
+    log.error(e, "Failed to change qBittorrent speed mode");
+    await ctx.reply("Не удалось изменить режим скорости.");
+  }
+});
+
 // ── Error Handler ─────────────────────────────────
 
 bot.catch((err) => {
@@ -72,7 +111,10 @@ async function main() {
   await autoLinkAdmin();
 
   // Set commands menu
-  await bot.api.setMyCommands([{ command: "start", description: "Open Teleseerr" }]);
+  await bot.api.setMyCommands([
+    { command: "start", description: "Open Teleseerr" },
+    { command: "speed", description: "Скорость qBittorrent: max/default" },
+  ]);
 
   // Set menu button to open Mini App directly
   if (config.MINI_APP_URL) {

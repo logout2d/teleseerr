@@ -53,6 +53,7 @@ export const config = {
   ANIME_SONARR_ID: optional("TELESEERR_ANIME_SONARR_ID", ""),
   AUTO_RETRY_FAILED: optional("TELESEERR_AUTO_RETRY_FAILED", "false") === "true",
   RETRY_DELAYS_SECONDS: optionalIntList("TELESEERR_RETRY_DELAYS_SECONDS", [30, 120, 300]),
+  SPEED_MODE_FILE: optional("TELESEERR_SPEED_MODE_FILE", ""),
 
   // Sonarr/Radarr direct API (optional — for download progress)
   RADARR_URL: optional("TELESEERR_RADARR_URL", "").replace(/\/$/, ""),

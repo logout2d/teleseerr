@@ -13,6 +13,7 @@ services:
       - TELESEERR_ANIME_SONARR_ID=${TELESEERR_ANIME_SONARR_ID:-}
       - TELESEERR_AUTO_RETRY_FAILED=${TELESEERR_AUTO_RETRY_FAILED:-false}
       - TELESEERR_RETRY_DELAYS_SECONDS=${TELESEERR_RETRY_DELAYS_SECONDS:-30,120,300}
+      - TELESEERR_SPEED_MODE_FILE=${TELESEERR_SPEED_MODE_FILE:-/app/control/qbittorrent-speed-mode}
       - TELESEERR_RADARR_URL=${TELESEERR_RADARR_URL:-}
       - TELESEERR_RADARR_API_KEY=${TELESEERR_RADARR_API_KEY:-}
       - TELESEERR_SONARR_URL=${TELESEERR_SONARR_URL:-}
@@ -20,6 +21,7 @@ services:
       - NODE_ENV=production
     volumes:
       - teleseerr-data:/app/data
+      - ${TELESEERR_CONTROL_DIR:-/var/lib/media-stack/teleseerr-control}:/app/control
     ports:
       - 3000:3000
     networks:
