@@ -23,7 +23,7 @@ export const initData = tg?.initData ?? "";
 export const isTelegramWebApp = !!initData;
 
 /** @type {string} */
-export const TMDB_IMG = "https://image.tmdb.org/t/p";
+export const TMDB_IMG = "/image";
 
 // ── State (getter/setter to avoid ES module live-binding issues) ──
 
