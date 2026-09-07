@@ -7,6 +7,7 @@ import * as seerr from "./seerr/client.js";
 import { handleWebhook, type SeerrWebhookPayload } from "./notifications.js";
 import { addPendingAndNotify } from "./pending.js";
 import { authenticate, type ValidAuth } from "./auth.js";
+import { handleTmdbImageProxy } from "./image-proxy.js";
 import {
   json,
   error,
@@ -192,6 +193,11 @@ export function startServer(bot: Bot): void {
       if (path === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+
+      // Public same-origin TMDB image proxy
+      if (await handleTmdbImageProxy(req, res, path)) {
         return;
       }
 
